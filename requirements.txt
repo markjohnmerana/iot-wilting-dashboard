@@ -1,0 +1,21 @@
+# ──────────────────────────────────────────────
+# Plant Monitoring ETL — Python dependencies
+# ──────────────────────────────────────────────
+
+# Google Sheets
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+google-api-python-client==2.128.0
+
+# Data processing
+pandas==2.2.2
+numpy==1.26.4
+
+# SQL Server
+pyodbc==5.1.0
+
+# Environment variables
+python-dotenv==1.0.1
+
+# Airflow extras (already present in the Docker image, listed for local dev)
+apache-airflow==2.9.1

@@ -1,0 +1,127 @@
+
+
+# ──────────────────────────────────────────────────────────────
+# Plant Monitoring ETL — Docker Compose
+#
+# Services:
+#   postgres      — Airflow metadata database
+#   sqlserver     — Target data warehouse (SQL Server 2022)
+#   airflow-init  — One-time DB init + admin user creation
+#   webserver     — Airflow UI  →  http://localhost:8080
+#   scheduler     — Airflow scheduler (runs the DAGs)
+# ──────────────────────────────────────────────────────────────
+
+x-airflow-common: &airflow-common
+  build: .
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ""
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    PYTHONPATH: "/opt/airflow/etl"
+
+    # ── ETL env vars (loaded by config.py) ──
+    GOOGLE_CREDENTIALS_PATH: /opt/airflow/etl/credentials/google_credentials.json
+    SPREADSHEET_ID:          ${SPREADSHEET_ID}
+    SHEET_NAME:              ${SHEET_NAME:-Sheet1}
+
+    SQL_SERVER_HOST:         sqlserver
+    SQL_SERVER_PORT:         "1433"
+    SQL_SERVER_DATABASE:     ${SQL_SERVER_DATABASE:-PlantMonitoring}
+    SQL_SERVER_USER:         ${SQL_SERVER_USER:-sa}
+    SQL_SERVER_PASSWORD:     ${SQL_SERVER_PASSWORD:-YourStrong!Passw0rd}
+    SQL_SERVER_DRIVER:       "ODBC Driver 18 for SQL Server"
+
+    LOG_LEVEL:               ${LOG_LEVEL:-INFO}
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    - ./credentials:/opt/airflow/etl/credentials:ro   # read-only credentials mount
+    - ./extract:/opt/airflow/etl/extract
+    - ./transform:/opt/airflow/etl/transform
+    - ./load:/opt/airflow/etl/load
+    - ./config.py:/opt/airflow/etl/config.py
+    - ./logger.py:/opt/airflow/etl/logger.py
+
+  depends_on:
+    postgres:
+      condition: service_healthy
+    sqlserver:
+      condition: service_healthy
+
+services:
+
+  # ── Airflow metadata DB ──────────────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER:     airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB:       airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  # ── SQL Server (target data warehouse) ──────────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA:       "Y"
+      SA_PASSWORD:       ${SQL_SERVER_PASSWORD:-YourStrong!Passw0rd}
+      MSSQL_PID:         Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./sql:/docker-entrypoint-initdb.d   # schema.sql is run on first start
+    healthcheck:
+      test: >
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa
+        -P "${SQL_SERVER_PASSWORD:-YourStrong!Passw0rd}"
+        -Q "SELECT 1" -No -C
+      interval: 15s
+      retries: 10
+      start_period: 30s
+
+  # ── One-time Airflow initialisation ─────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    command: bash -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
+    restart: "no"
+
+  # ── Airflow web UI ───────────────────────────────────────────
+  webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ── Airflow scheduler ────────────────────────────────────────
+  scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  sqlserver_data:
